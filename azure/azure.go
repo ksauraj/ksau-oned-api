@@ -3,7 +3,6 @@ package azure
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -28,9 +27,9 @@ type AzureClient struct {
 }
 
 // NewAzureClientFromRcloneConfigData initializes the AzureClient from embedded rclone config data
-func NewAzureClientFromRcloneConfigData(configData []byte) (*AzureClient, error) {
-	fmt.Println("Reading rclone config from embedded data")
-	configMap, err := ParseRcloneConfigData(configData)
+func NewAzureClientFromRcloneConfigData(configData []byte, remoteConfig string) (*AzureClient, error) {
+	fmt.Println("Reading rclone config from embedded data for remote:", remoteConfig)
+	configMap, err := ParseRcloneConfigData(configData, remoteConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse rclone config: %v", err)
 	}
@@ -66,9 +65,9 @@ func NewAzureClientFromRcloneConfigData(configData []byte) (*AzureClient, error)
 	return &client, nil
 }
 
-// ParseRcloneConfigData parses the rclone configuration data and extracts key-value pairs
-func ParseRcloneConfigData(configData []byte) (map[string]string, error) {
-	fmt.Println("Parsing rclone config data")
+// ParseRcloneConfigData parses the rclone configuration data and extracts key-value pairs for the specified remote
+func ParseRcloneConfigData(configData []byte, remoteConfig string) (map[string]string, error) {
+	fmt.Println("Parsing rclone config data for remote:", remoteConfig)
 	content := string(configData)
 	lines := strings.Split(content, "\n")
 	configMap := make(map[string]string)
@@ -85,7 +84,7 @@ func ParseRcloneConfigData(configData []byte) (map[string]string, error) {
 			continue
 		}
 
-		if currentSection == "oned" {
+		if currentSection == remoteConfig {
 			parts := strings.SplitN(line, "=", 2)
 			if len(parts) == 2 {
 				key := strings.TrimSpace(parts[0])
@@ -96,7 +95,7 @@ func ParseRcloneConfigData(configData []byte) (map[string]string, error) {
 	}
 
 	if len(configMap) == 0 {
-		return nil, errors.New("no configuration found for 'oned'")
+		return nil, fmt.Errorf("no configuration found for remote: %s", remoteConfig)
 	}
 
 	return configMap, nil
