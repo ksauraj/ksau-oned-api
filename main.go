@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
-	"ksau-oned-api/azure" // Adjust the import path
+	"github.com/ksauraj/ksau-oned-api/azure" // Adjust the import path
 )
 
 //go:embed rclone.conf
@@ -24,7 +25,8 @@ const (
 func main() {
 	// Define command-line flags
 	filePath := flag.String("file", "", "Path to the local file to upload")
-	remotePath := flag.String("remote", "", "Remote path on OneDrive to upload the file")
+	remoteFolder := flag.String("remote", "", "Remote folder on OneDrive to upload the file")
+	remoteFileName := flag.String("remote-name", "", "Optional: Remote filename (defaults to local filename if not provided)")
 	chunkSize := flag.Int64("chunk-size", 0, "Chunk size for uploads (in bytes). If 0, it will be dynamically selected based on file size.")
 	parallelChunks := flag.Int("parallel", 1, "Number of parallel chunks to upload")
 	maxRetries := flag.Int("retries", 3, "Maximum number of retries for uploading chunks")
@@ -33,13 +35,13 @@ func main() {
 	flag.Parse()
 
 	// Check if the file and remote flags are provided
-	if *filePath == "" || *remotePath == "" {
+	if *filePath == "" || *remoteFolder == "" {
 		fmt.Println("Error: both -file and -remote flags are required")
 		flag.Usage()
 		return
 	}
 
-	// Get file size
+	// Get file info
 	fileInfo, err := os.Stat(*filePath)
 	if err != nil {
 		fmt.Println("Failed to get file info:", err)
@@ -54,6 +56,15 @@ func main() {
 	} else {
 		fmt.Printf("Using user-specified chunk size: %d bytes\n", *chunkSize)
 	}
+
+	// Determine the remote filename
+	localFileName := filepath.Base(*filePath) // Get the local filename
+	remoteFilePath := filepath.Join(*remoteFolder, localFileName)
+	if *remoteFileName != "" {
+		// If a custom remote filename is provided, use it
+		remoteFilePath = filepath.Join(*remoteFolder, *remoteFileName)
+	}
+	fmt.Printf("Remote file path: %s\n", remoteFilePath)
 
 	// Read the embedded config file
 	configData, err := configFile.ReadFile("rclone.conf")
@@ -74,7 +85,7 @@ func main() {
 	// Prepare upload parameters
 	params := azure.UploadParams{
 		FilePath:       *filePath,
-		RemoteFilePath: *remotePath,
+		RemoteFilePath: remoteFilePath,
 		ChunkSize:      *chunkSize,
 		ParallelChunks: *parallelChunks,
 		MaxRetries:     *maxRetries,
