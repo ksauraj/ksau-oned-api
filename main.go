@@ -47,8 +47,38 @@ func main() {
 	parallelChunks := flag.Int("parallel", 1, "Number of parallel chunks to upload (default: 1)")
 	maxRetries := flag.Int("retries", 3, "Maximum number of retries for uploading chunks (default: 3)")
 	retryDelay := flag.Duration("retry-delay", 5*time.Second, "Delay between retries (default: 5s)")
+	showQuota := flag.Bool("show-quota", false, "Display quota information for all remotes and exit")
 
 	flag.Parse()
+
+	// Read the embedded config file
+	configData, err := configFile.ReadFile("rclone.conf")
+	if err != nil {
+		fmt.Println("Failed to read embedded config file:", err)
+		return
+	}
+
+	// Initialize AzureClient for each remote configuration
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+
+	if *showQuota {
+		for remote := range rootFolders {
+			client, err := azure.NewAzureClientFromRcloneConfigData(configData, remote)
+			if err != nil {
+				fmt.Printf("Failed to initialize client for remote '%s': %v\n", remote, err)
+				continue
+			}
+
+			quota, err := client.GetDriveQuota(httpClient)
+			if err != nil {
+				fmt.Printf("Failed to fetch quota information for remote '%s': %v\n", remote, err)
+				continue
+			}
+
+			azure.DisplayQuotaInfo(remote, quota)
+		}
+		return
+	}
 
 	// Check if the file and remote flags are provided
 	if *filePath == "" || *remoteFolder == "" {
@@ -90,21 +120,12 @@ func main() {
 	fullRemotePath := filepath.Join(rootFolder, remoteFilePath)
 	fmt.Printf("Full remote path: %s\n", fullRemotePath)
 
-	// Read the embedded config file
-	configData, err := configFile.ReadFile("rclone.conf")
-	if err != nil {
-		fmt.Println("Failed to read embedded config file:", err)
-		return
-	}
-
 	// Initialize AzureClient using the embedded config and specified remote section
 	client, err := azure.NewAzureClientFromRcloneConfigData(configData, *remoteConfig)
 	if err != nil {
 		fmt.Println("Failed to initialize client:", err)
 		return
 	}
-
-	httpClient := &http.Client{Timeout: 10 * time.Second}
 
 	// Prepare upload parameters
 	params := azure.UploadParams{

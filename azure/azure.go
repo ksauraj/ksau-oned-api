@@ -28,7 +28,7 @@ type AzureClient struct {
 
 // NewAzureClientFromRcloneConfigData initializes the AzureClient from embedded rclone config data
 func NewAzureClientFromRcloneConfigData(configData []byte, remoteConfig string) (*AzureClient, error) {
-	fmt.Println("Reading rclone config from embedded data for remote:", remoteConfig)
+	//fmt.Println("Reading rclone config from embedded data for remote:", remoteConfig)
 	configMap, err := ParseRcloneConfigData(configData, remoteConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse rclone config: %v", err)
@@ -67,7 +67,7 @@ func NewAzureClientFromRcloneConfigData(configData []byte, remoteConfig string) 
 
 // ParseRcloneConfigData parses the rclone configuration data and extracts key-value pairs for the specified remote
 func ParseRcloneConfigData(configData []byte, remoteConfig string) (map[string]string, error) {
-	fmt.Println("Parsing rclone config data for remote:", remoteConfig)
+	//fmt.Println("Parsing rclone config data for remote:", remoteConfig)
 	content := string(configData)
 	lines := strings.Split(content, "\n")
 	configMap := make(map[string]string)
@@ -350,4 +350,83 @@ type UploadParams struct {
 	MaxRetries     int
 	RetryDelay     time.Duration
 	AccessToken    string
+}
+
+// DriveQuota represents the quota information for a drive
+type DriveQuota struct {
+	Total     int64 `json:"total"`
+	Used      int64 `json:"used"`
+	Remaining int64 `json:"remaining"`
+	Deleted   int64 `json:"deleted"`
+}
+
+// GetDriveQuota fetches the quota information for the drive
+func (client *AzureClient) GetDriveQuota(httpClient *http.Client) (*DriveQuota, error) {
+	// Ensure the access token is valid
+	if err := client.EnsureTokenValid(httpClient); err != nil {
+		return nil, err
+	}
+
+	// Construct the URL to get the drive's quota information
+	url := fmt.Sprintf("https://graph.microsoft.com/v1.0/me/drive/quota")
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create quota request: %v", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+client.AccessToken)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch quota information: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to fetch quota information, status: %d, response: %s", resp.StatusCode, responseBody)
+	}
+
+	var quotaResponse struct {
+		Total     int64 `json:"total"`
+		Used      int64 `json:"used"`
+		Remaining int64 `json:"remaining"`
+		Deleted   int64 `json:"deleted"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&quotaResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse quota response: %v", err)
+	}
+
+	return &DriveQuota{
+		Total:     quotaResponse.Total,
+		Used:      quotaResponse.Used,
+		Remaining: quotaResponse.Remaining,
+		Deleted:   quotaResponse.Deleted,
+	}, nil
+}
+
+// formatBytes converts bytes to a human-readable format
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.3f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// DisplayQuotaInfo displays the quota information for the drive
+func DisplayQuotaInfo(remote string, quota *DriveQuota) {
+	fmt.Printf("Remote: %s\n", remote)
+	fmt.Printf("Total:   %s\n", formatBytes(quota.Total))
+	fmt.Printf("Used:    %s\n", formatBytes(quota.Used))
+	fmt.Printf("Free:    %s\n", formatBytes(quota.Remaining))
+	fmt.Printf("Trashed: %s\n", formatBytes(quota.Deleted))
+	fmt.Println()
 }
