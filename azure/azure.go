@@ -151,32 +151,32 @@ func (client *AzureClient) EnsureTokenValid(httpClient *http.Client) error {
 }
 
 // Upload uploads a file to OneDrive using parallel chunk uploads
-func (client *AzureClient) Upload(httpClient *http.Client, params UploadParams) (bool, error) {
+func (client *AzureClient) Upload(httpClient *http.Client, params UploadParams) (string, error) {
 	fmt.Println("Starting file upload with upload session...")
 
 	// Ensure the access token is valid
 	if err := client.EnsureTokenValid(httpClient); err != nil {
-		return false, err
+		return "", err
 	}
 
 	// Create an upload session
 	uploadURL, err := client.createUploadSession(httpClient, params.RemoteFilePath, client.AccessToken)
 	if err != nil {
-		return false, fmt.Errorf("failed to create upload session: %v", err)
+		return "", fmt.Errorf("failed to create upload session: %v", err)
 	}
 	fmt.Println("Upload session created successfully.")
 
 	// Open the file to upload
 	file, err := os.Open(params.FilePath)
 	if err != nil {
-		return false, fmt.Errorf("failed to open file: %v", err)
+		return "", fmt.Errorf("failed to open file: %v", err)
 	}
 	defer file.Close()
 
 	// Get file information
 	fileInfo, err := file.Stat()
 	if err != nil {
-		return false, fmt.Errorf("failed to get file info: %v", err)
+		return "", fmt.Errorf("failed to get file info: %v", err)
 	}
 	fileSize := fileInfo.Size()
 	fmt.Printf("File size: %d bytes\n", fileSize)
@@ -236,11 +236,52 @@ func (client *AzureClient) Upload(httpClient *http.Client, params UploadParams) 
 	// Check for errors
 	select {
 	case err := <-errChan:
-		return false, fmt.Errorf("failed to upload file: %v", err)
+		return "", fmt.Errorf("failed to upload file: %v", err)
 	default:
-		fmt.Println("File uploaded successfully.")
-		return true, nil
+		fileID, err := client.getFileID(httpClient, params.RemoteFilePath)
+		if err != nil {
+			return "", fmt.Errorf("failed to fetch file ID: %v", err)
+		}
+
+		return fileID, nil
 	}
+
+}
+
+// getFileID retrieves the file ID for a given remote path
+func (client *AzureClient) getFileID(httpClient *http.Client, remotePath string) (string, error) {
+	url := fmt.Sprintf("https://graph.microsoft.com/v1.0/me/drive/root:/%s", remotePath)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %v", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+client.AccessToken)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch file metadata: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("failed to fetch file metadata, status: %d, response: %s", resp.StatusCode, responseBody)
+	}
+
+	var metadata struct {
+		ID string `json:"id"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&metadata); err != nil {
+		return "", fmt.Errorf("failed to parse metadata: %v", err)
+	}
+
+	if metadata.ID == "" {
+		return "", fmt.Errorf("file ID not found in metadata")
+	}
+
+	return metadata.ID, nil
 }
 
 // createUploadSession creates an upload session for the file
@@ -429,4 +470,52 @@ func DisplayQuotaInfo(remote string, quota *DriveQuota) {
 	fmt.Printf("Free:    %s\n", formatBytes(quota.Remaining))
 	fmt.Printf("Trashed: %s\n", formatBytes(quota.Deleted))
 	fmt.Println()
+}
+
+// GetQuickXorHash retrieves the quickXorHash for a file from OneDrive
+func (client *AzureClient) GetQuickXorHash(httpClient *http.Client, fileID string) (string, error) {
+	// Ensure the access token is valid
+	if err := client.EnsureTokenValid(httpClient); err != nil {
+		return "", err
+	}
+
+	// Construct the URL to get the file's metadata
+	url := fmt.Sprintf("https://graph.microsoft.com/v1.0/me/drive/items/%s", fileID)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %v", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+client.AccessToken)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch file metadata: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("failed to fetch file metadata, status: %d, response: %s", resp.StatusCode, responseBody)
+	}
+
+	// Parse the response to extract the quickXorHash
+	var metadata struct {
+		File struct {
+			Hashes struct {
+				QuickXorHash string `json:"quickXorHash"`
+			} `json:"hashes"`
+		} `json:"file"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&metadata); err != nil {
+		return "", fmt.Errorf("failed to parse metadata: %v", err)
+	}
+
+	if metadata.File.Hashes.QuickXorHash == "" {
+		return "", fmt.Errorf("quickXorHash not found in metadata")
+	}
+
+	return metadata.File.Hashes.QuickXorHash, nil
 }
