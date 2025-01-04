@@ -2,8 +2,10 @@ package main
 
 import (
 	"embed"
+	"encoding/base64"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ksauraj/ksau-oned-api/azure" // Adjust the import path
+	"github.com/rclone/rclone/backend/onedrive/quickxorhash"
 )
 
 //go:embed rclone.conf
@@ -37,6 +40,59 @@ var baseURLs = map[string]string{
 	"saurajcf":       "https://my-index-azure.vercel.app",
 }
 
+// formatBytes converts bytes to a human-readable format
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.3f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// QuickXorHash calculates the QuickXorHash for a file using the quickxorhash package
+func QuickXorHash(filePath string) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open file: %v", err)
+	}
+	defer file.Close()
+
+	// Create a new QuickXorHash instance
+	hash := quickxorhash.New()
+
+	// Copy the file content into the hash
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", fmt.Errorf("failed to calculate hash: %v", err)
+	}
+
+	// Get the hash as a Base64-encoded string
+	hashBytes := hash.Sum(nil)
+	hashString := base64.StdEncoding.EncodeToString(hashBytes)
+
+	return hashString, nil
+}
+
+// getQuickXorHashWithRetry retries fetching the quickXorHash until it succeeds or max retries are reached
+func getQuickXorHashWithRetry(client *azure.AzureClient, httpClient *http.Client, fileID string, maxRetries int, retryDelay time.Duration) (string, error) {
+	for retry := 0; retry < maxRetries; retry++ {
+		remoteHash, err := client.GetQuickXorHash(httpClient, fileID)
+		if err == nil {
+			return remoteHash, nil
+		}
+
+		// Log the error and wait before retrying
+		fmt.Printf("Attempt %d/%d: Failed to retrieve remote QuickXorHash: %v\n", retry+1, maxRetries, err)
+		time.Sleep(retryDelay)
+	}
+
+	return "", fmt.Errorf("failed to retrieve remote QuickXorHash after %d retries", maxRetries)
+}
+
 func main() {
 	// Define command-line flags
 	filePath := flag.String("file", "", "Path to the local file to upload (required)")
@@ -48,6 +104,9 @@ func main() {
 	maxRetries := flag.Int("retries", 3, "Maximum number of retries for uploading chunks (default: 3)")
 	retryDelay := flag.Duration("retry-delay", 5*time.Second, "Delay between retries (default: 5s)")
 	showQuota := flag.Bool("show-quota", false, "Display quota information for all remotes and exit")
+	skipHash := flag.Bool("skip-hash", false, "Skip QuickXorHash verification (default: false)")
+	hashRetries := flag.Int("hash-retries", 5, "Maximum number of retries for fetching QuickXorHash (default: 5)")
+	hashRetryDelay := flag.Duration("hash-retry-delay", 10*time.Second, "Delay between QuickXorHash retries (default: 10s)")
 
 	flag.Parse()
 
@@ -138,15 +197,17 @@ func main() {
 		AccessToken:    client.AccessToken,
 	}
 
-	// Upload the file
-	success, err := client.Upload(httpClient, params)
+	fileID, err := client.Upload(httpClient, params)
 	if err != nil {
 		fmt.Println("Failed to upload file:", err)
 		return
 	}
 
-	if success {
+	fmt.Printf("File ID: %s\n", fileID)
+
+	if fileID != "" {
 		fmt.Println("File uploaded successfully.")
+		fmt.Printf("File ID: %s\n", fileID)
 
 		// Generate the download URL
 		baseURL, exists := baseURLs[*remoteConfig]
@@ -167,9 +228,42 @@ func main() {
 		// Generate the full download URL
 		downloadURL := fmt.Sprintf("%s/%s", baseURL, urlPath)
 		fmt.Printf("Download URL: %s\n", downloadURL)
+
+		// Skip hash verification if requested
+		if *skipHash {
+			fmt.Println("Skipping QuickXorHash verification.")
+			return
+		}
+
+		// Calculate the local QuickXorHash
+		localHash, err := QuickXorHash(*filePath)
+		if err != nil {
+			fmt.Printf("Failed to calculate local QuickXorHash: %v\n", err)
+			return
+		}
+
+		// Retrieve the remote QuickXorHash with retries
+		remoteHash, err := getQuickXorHashWithRetry(client, httpClient, fileID, *hashRetries, *hashRetryDelay)
+		if err != nil {
+			fmt.Printf("Failed to retrieve remote QuickXorHash: %v\n", err)
+			return
+		}
+		fmt.Printf("Remote File ID: %s\n", fileID)
+		fmt.Printf("Remote QuickXorHash: %s\n", remoteHash)
+
+		// Compare the hashes
+		if localHash != remoteHash {
+			fmt.Printf("Local File Path: %s\n", *filePath)
+			fmt.Printf("Local File Size: %d bytes\n", fileSize)
+			fmt.Printf("Local QuickXorHash: %s\n", localHash)
+			fmt.Println("QuickXorHash mismatch: File integrity verification failed.")
+		} else {
+			fmt.Println("QuickXorHash match: File integrity verified.")
+		}
 	} else {
 		fmt.Println("File upload failed.")
 	}
+
 }
 
 // getChunkSize dynamically selects a chunk size based on the file size
