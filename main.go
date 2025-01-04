@@ -26,6 +26,14 @@ const (
 	largeFileSize  = 1024 * 1024 * 1024 // 1 GB
 )
 
+// ANSI color codes for terminal output
+const (
+	ColorReset  = "\033[0m"
+	ColorGreen  = "\033[32m"
+	ColorYellow = "\033[33m"
+	ColorRed    = "\033[31m"
+)
+
 // Root folders for each remote configuration (will soon move to config file)
 var rootFolders = map[string]string{
 	"hakimionedrive": "Public",
@@ -203,11 +211,11 @@ func main() {
 		return
 	}
 
-	fmt.Printf("File ID: %s\n", fileID)
+	//fmt.Printf("File ID: %s\n", fileID)
 
 	if fileID != "" {
 		fmt.Println("File uploaded successfully.")
-		fmt.Printf("File ID: %s\n", fileID)
+		//fmt.Printf("File ID: %s\n", fileID)
 
 		// Generate the download URL
 		baseURL, exists := baseURLs[*remoteConfig]
@@ -227,13 +235,15 @@ func main() {
 
 		// Generate the full download URL
 		downloadURL := fmt.Sprintf("%s/%s", baseURL, urlPath)
-		fmt.Printf("Download URL: %s\n", downloadURL)
+		fmt.Printf("%sDownload URL:%s %s%s%s\n", ColorGreen, ColorReset, ColorGreen, downloadURL, ColorReset)
 
 		// Skip hash verification if requested
 		if *skipHash {
 			fmt.Println("Skipping QuickXorHash verification.")
 			return
 		}
+
+		fmt.Println("Verifying file integrity...")
 
 		// Calculate the local QuickXorHash
 		localHash, err := QuickXorHash(*filePath)
@@ -248,17 +258,17 @@ func main() {
 			fmt.Printf("Failed to retrieve remote QuickXorHash: %v\n", err)
 			return
 		}
-		fmt.Printf("Remote File ID: %s\n", fileID)
-		fmt.Printf("Remote QuickXorHash: %s\n", remoteHash)
+		//fmt.Printf("Remote File ID: %s\n", fileID)
+		//fmt.Printf("Remote QuickXorHash: %s\n", remoteHash)
 
 		// Compare the hashes
 		if localHash != remoteHash {
 			fmt.Printf("Local File Path: %s\n", *filePath)
 			fmt.Printf("Local File Size: %d bytes\n", fileSize)
 			fmt.Printf("Local QuickXorHash: %s\n", localHash)
-			fmt.Println("QuickXorHash mismatch: File integrity verification failed.")
+			fmt.Printf("%sQuickXorHash mismatch: File integrity verification failed.%s\n", ColorRed, ColorReset)
 		} else {
-			fmt.Println("QuickXorHash match: File integrity verified.")
+			fmt.Printf("%sQuickXorHash match: File integrity verified.%s\n", ColorGreen, ColorReset)
 		}
 	} else {
 		fmt.Println("File upload failed.")
